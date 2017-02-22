@@ -34,6 +34,17 @@ class TcpEndpoint():
 
         self.set_initial_sequence_numbers(annotated_packet, use_source)
 
+    def bytes_passed_computation_show(self, flag=False):
+        return
+        if not flag:
+            return
+        bytes_count = 0
+        for packet in self.packets:
+            print packet.data_len, bytes_count, packet.bytes_passed, packet.is_lost()
+            if packet.is_lost() == False:
+                bytes_count += packet.data_len
+        return
+
     def get_median_rtt_ms(self, recompute=False):
         if self.median_rtt_ms is None or recompute:
             rtts = []

@@ -10,6 +10,7 @@ class TcpFlow():
         # endpoint_a: source, endpoint_b: destination
         self.endpoint_a = TcpEndpoint(annotated_packet, True)
         self.endpoint_b = TcpEndpoint(annotated_packet, False)
+        #self.count = 0
         self.packets = []
 
     def add_packet(self, annotated_packet, process_packet=True):
@@ -28,6 +29,7 @@ class TcpFlow():
 
         if process_packet and ip.tcp.flags & TH_ACK:
             current_receiver.process_ack(annotated_packet)
+            #print annotated_packet.packet.ip.tcp.ack
 
     def post_process(self):
         self.endpoint_a.set_passed_bytes_for_packets()

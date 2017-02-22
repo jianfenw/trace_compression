@@ -18,6 +18,13 @@ def split_flow_into_segments(flow):
     current_segment = TcpFlow(flow.packets[0])
     segments.append(current_segment)
     for packet in flow.packets:
+        """
+        if packet.packet.ip.src == flow.endpoint_a.ip and \
+            packet.packet.ip.tcp.sport == flow.endpoint_a.port:
+            print 1, packet.data_len
+        else:
+            print 0, packet.data_len
+        """
         if packet.data_len == 0:
             if len(current_segment.packets) > 0:
                 current_segment.add_packet(packet, False)

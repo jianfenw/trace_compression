@@ -126,7 +126,6 @@ class TcpRTTPlot(object):
                 count += 1
         return count
 
-
     def show_rtts_plot(self, plot_title, ident_color):
         figure()
         max_rtt = 0
@@ -146,17 +145,17 @@ class TcpRTTPlot(object):
         if self.median_rtt_ms == -1:
             tmp_rtts = []
             for i in range(self.rtts_number):
-                if self.rtts[i] != -1:
+                if self.rtts[i] != -1 and self.rtts[i] != 0:
                     tmp_rtts.append(self.rtts[i])
-            self.median_rtt_ms = median(tmp_rtts)
+            if len(tmp_rtts) >= 1:
+                self.median_rtt_ms = median(tmp_rtts)
         return self.median_rtt_ms
 
     """
         If the number of inflated rtts exceeds our threshold,
         inflated_rtt_flag will be set to '1'.
-        In this case, traffic policing does not happen within this flow.
+        In this case, traffic policing does not exist in this flow.
     """
-
     def get_inflated_rtt_flag(self):
         rtt_count_on_loss = 0
         inflated_rtt_count_on_loss = 0
@@ -167,6 +166,7 @@ class TcpRTTPlot(object):
             if self.rtts[i] != -1 and self.rtts[i] != 0:
                 tmp_rtts.append(self.rtts[i])
 
+            # The total number of losses which are token into consideration.
             if self.rtts[i] == 0:
                 rtt_count_on_loss += 1
 
@@ -174,11 +174,142 @@ class TcpRTTPlot(object):
                     and tmp_rtts[-2] > percentile(tmp_rtts, INFLATED_RTT_PERCENTILE) * \
                     INFLATED_RTT_THRESHOLD \
                     and tmp_rtts[-2] >= 20:
-                    inflated_rtt_count += 1
+                    inflated_rtt_count_on_loss += 1
 
         rtt_threshold = INFLATED_RTT_TOLERANCE * rtt_count_on_loss
         if inflated_rtt_count_on_loss > rtt_threshold:
             return 1
+
+        return 0
+
+class TokenBucketSim(object):
+
+    def __init__(self, TcpPlot):
+        self.node_number = 0
+        self.nodes = []
+        self.policing_rate_bps = 0
+        self.first_loss = None
+        self.last_loss = None
+
+
+        self.median_rtt_us = TcpPlot.get_median_rtt_ms(0) * 1000
+
+        self.init_token_bucket_simulator(TcpPlot)
+
+    def init_token_bucket_simulator(self, TcpPlot):
+        result_nums = 0
+        result_nodes = []
+        index = 0
+
+        first_loss = last_loss = None
+
+        uncompress_nodes_number = TcpPlot.uncompress_nodes_number
+        uncompress_nodes = TcpPlot.uncompress_nodes
+
+        while index < uncompress_nodes_number:
+            if index == 0 or index == uncompress_nodes_number - 1:
+                result_nodes.append(uncompress_nodes[index])
+                result_nums += 1
+            elif uncompress_nodes[index].is_lost == True:
+
+                if first_loss == None:
+                    first_loss = uncompress_nodes[index]
+
+                result_nodes.append(uncompress_nodes[index])
+                result_nums += 1
+
+                if index > 1 and uncompress_nodes[index - 1].is_lost == False:
+                    result_nodes.append(uncompress_nodes[index - 1])
+                    result_nums += 1
+
+            index += 1
+
+        for node in reversed(uncompress_nodes):
+            if node.is_lost:
+                if last_loss == None:
+                    last_loss = node
+                    break
+            continue
+
+        self.node_number = result_nums
+        self.nodes = result_nodes
+        self.policing_rate_bps = TcpPlot.goodput_for_range(first_loss, last_loss, 0)
+        self.first_loss = first_loss
+        self.last_loss = last_loss
+
+
+    def token_bucket_simulator(self):
+        if self.first_loss == None or self.last_loss == None:
+            return RESULT_INSUFFICIENT_LOSS
+        if self.first_loss.seq > LATE_LOSS_THRESHOLD:
+            return RESULT_LATE_LOSS
+
+        """
+            ZERO_THRESHOLD_LOSS_RTT_MULTIPLIER = 2.0
+            ZERO_THRESHOLD_PASS_RTT_MULTIPLIER = 0.75
+            ZERO_THRESHOLD_LOSS_OUT_OF_RANGE = 0.1
+            ZERO_THRESHOLD_PASS_OUT_OF_RANGE = 0.03
+        """
+        loss_zero_threshold = ZERO_THRESHOLD_LOSS_RTT_MULTIPLIER * \
+            self.median_rtt_us * self.policing_rate_bps / 8E6
+
+        pass_zero_threshold = ZERO_THRESHOLD_PASS_RTT_MULTIPLIER * \
+            self.median_rtt_us * self.policing_rate_bps / 8E6
+
+        y_intercept = self.first_loss.seq - (self.first_loss.timestamp_us - self.nodes[0].timestamp_us) \
+            * self.policing_rate_bps / 8E6
+
+        # Result code 3: Negative Fill
+        if y_intercept < -pass_zero_threshold:
+            return RESULT_NEGATIVE_FILL
+        
+        tokens_available = 0
+        tokens_used = 0
+        tokens_on_loss = []
+        tokens_on_pass = []
+
+        for node in self.nodes:
+            tokens_produced = (node.timestamp_us - self.first_loss.timestamp_us) * \
+                self.policing_rate_bps / 8E6
+
+            tokens_used = node.bytes_passed
+            tokens_available = tokens_produced - tokens_used
+
+            if node.is_lost:
+                tokens_on_loss.append(tokens_available)
+            else:
+                tokens_on_pass.append(tokens_available)
+
+        # Result code 1: Insufficient loss
+        if len(tokens_on_loss) < MIN_NUM_SAMPLES or len(tokens_on_pass) < MIN_NUM_SAMPLES:
+            return RESULT_INSUFFICIENT_LOSS
+
+        # Result code 4: Higher Fill on Loss
+        if mean(tokens_on_pass) <= mean(tokens_on_loss) or \
+            median(tokens_on_pass) <= median(tokens_on_loss):
+            return RESULT_HIGHER_FILL_ON_LOSS
+
+        """
+            Result code 5: Loss Fill Out of Range
+            Token bucket is roughly empty when experiencing loss.
+            Result code 6: Pass Fill Out of Range
+            Token bucket cannot be empty when experiencing pass.
+        """
+        median_tokens_on_loss = median(tokens_on_loss)
+        out_of_range = 0
+        for token in tokens_on_loss:
+            if abs(token - median_tokens_on_loss) > loss_zero_threshold:
+                out_of_range += 1
+        if out_of_range > len(tokens_on_loss) * ZERO_THRESHOLD_LOSS_OUT_OF_RANGE:
+            return RESULT_LOSS_FILL_OUT_OF_RANGE
+
+        median_tokens_on_pass = median(tokens_on_pass)
+        out_of_range = 0
+        for token in tokens_on_pass:
+            if abs(token - median_tokens_on_pass) > pass_zero_threshold:
+                out_of_range += 1
+        if out_of_range > len(tokens_on_pass) * ZERO_THRESHOLD_PASS_OUT_OF_RANGE:
+            return RESULT_PASS_FILL_OUT_OF_RANGE
 
         return 0
 
@@ -237,10 +368,11 @@ class TcpPlot(object):
             index += 1
         self.compress_nodes_number.append(result_nums)
         self.compress_nodes.append(result_nodes)
-    
+
     def get_compressed_plot_2(self):
         result_nums = 0
         result_nodes = []
+
         result_nodes.append(self.uncompress_nodes[0])
         result_nums += 1
         lost_packet_count = result_nodes[0].is_lost
@@ -268,6 +400,20 @@ class TcpPlot(object):
             result_nodes.append(self.uncompress_nodes[index])
             result_nodes[-1].cont_state_packet_number = 0
         result_nums += 1
+
+        self.compress_nodes_number.append(result_nums)
+        self.compress_nodes.append(result_nodes)
+
+    def get_compressed_plot_3(self):
+        result_nums = 0
+        result_nodes = []
+
+        result_nodes.append(self.uncompress_nodes[0])
+        result_nums += 1
+
+        index = 1
+        while index < self.uncompress_nodes_number - 1:
+
 
         self.compress_nodes_number.append(result_nums)
         self.compress_nodes.append(result_nodes)
@@ -311,7 +457,10 @@ class TcpPlot(object):
         for node in self.uncompress_nodes:
             if node.rtx == None and node.rtt_ms != -1:
                 rtts.append(node.rtt_ms)
-        median_rtt_ms = median(rtts)
+        if len(rtts) >= 1:
+            median_rtt_ms = median(rtts)
+        else:
+            median_rtt_ms = -1
         return median_rtt_ms
 
     """ Compute the goodput (in bps) achieved between observing two specific packets """
@@ -362,6 +511,7 @@ class TcpPlot(object):
         time_slice_us = right_edge.timestamp_us - left_edge.timestamp_us
         byte_count = right_edge.bytes_passed - left_edge.bytes_passed
         return byte_count * 8 * 1E6 / time_slice_us
+
 
 
 def get_policing_params_from_plot_0(ts_plot, cutoff = 0):
@@ -490,7 +640,7 @@ def get_policing_params_from_plot_0(ts_plot, cutoff = 0):
     # MIN_NUM_SAMPLES = 15
     if len(tokens_on_pass) < MIN_NUM_SAMPLES or len(tokens_on_loss) < MIN_NUM_SAMPLES:
         #print "Insufficient Loss"
-        print 2
+        #print 2
         return RESULT_INSUFFICIENT_LOSS
 
     """

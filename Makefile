@@ -17,7 +17,9 @@ endif
 SOURCE_DATE_FILTER := 2017/01/01
 
 FIG_DIR := pdfs
+TRACE_DIR := ndt-trace-data
 PROCESS_TRACE_FILE = "$(MK_PATH)process-trace-file.sh"
+DOWNLOAD_TRACE_FILE = "$(MK_PATH)download-trace-file.sh"
 
 # Specify column indexes based on the given OUTPUT_FORMAT
 COL_FILENAME = 2
@@ -39,6 +41,9 @@ K := $(foreach exec,$(EXECUTABLES), \
 plots:
 	mkdir -p $(FIG_DIR)
 
+traces:
+	mkdir -p $(TRACE_DIR)
+
 clean-all: clean-results clean-unfiltered
 	rm -f *.gen.mk
 	rm -f ndt-files*
@@ -46,6 +51,9 @@ clean-all: clean-results clean-unfiltered
 clean-results:
 	rm -f $(FIG_DIR)/*
 	rm -f *.csv
+
+clean-traces:
+	rm -rf $(TRACE_DIR)/*
 
 clean-unfiltered:
 	rm -f *.csv.gz
@@ -58,25 +66,53 @@ ndt-files:
 ndt-files-no-path: ndt-files
 	cat $< | sed -e 's#^.*/\([^/]*\)\.tgz$$#\1.csv.gz#' >> $@
 
+trace.gen.mk: ndt-files
+	echo "TRACE_FILES = \\" > $@
+	cat $< | awk '{printf "%s \\\n", $$0}' >> $@
+	echo >> $@
+
 deps.gen.mk: ndt-files-no-path
 	echo "CSV_FILES = \\" > $@
 	cat $< | awk '{printf "%s \\\n", $$0}' >> $@
 	echo >> $@
 
 -include deps.gen.mk
+-include trace.gen.mk
 
 HC_CSV_FILES := $(addprefix hc-, $(CSV_FILES))
 
-# Aggregate and keep high-correlation cases
+# Filter -- 
+# Aggregate and keep high-correlation cases (which is not included in my code)
+
+test-case:
+	echo $(CSV_FILES) | sed 's#.gz##g'
+
+policed-traces: $(TRACE_DIR) $(TRACE_DIR)
+	for file in $(CSV_FILES); do \
+		tmp=`echo $$file | sed -e 's#^\(.*\)\.csv\.gz$$#\1.csv#'`; \
+		echo $$tmp; \
+		$(DOWNLOAD_TRACE_FILE) $$tmp; \
+	done;
+
 hc-%.csv.gz: %.csv.gz
 	$(ZCAT_CMD) $^ | \
 	awk -F ',' '{if ($$3 >= 0) print}' | \
 	gzip > $@
 
-$(CSV_FILES):
-	echo $(@:.gz=)
-	$(PROCESS_TRACE_FILE) $(@:.gz=)
-	gzip $(@:.gz=)
+
+
+#$(CSV_FILES):
+#	echo $(@:.gz=)
+	#$(PROCESS_TRACE_FILE) $(@:.gz=)
+	#gzip $(@:.gz=)
+
+test-4: ndt-files ndt-trace-data 
+	for f in `cat $<`; do \
+		echo $$f; \
+		($(DOWNLOAD_TRACE_FILE) $$f || echo $$f,ERROR); \
+	done;
+	echo "Finish!"
+
 
 test-2.csv: ndt-files-no-path $(HC_CSV_FILES)
 	rm -f $@

@@ -83,12 +83,28 @@ for _, flow in flows.items():
 				data_endpoint = segment.endpoint_b
 
 			# Use my compression algorithm to compress the trace
+			if len(data_endpoint.packets) == 0:
+				continue
 			data_plot = TcpPlot(data_endpoint)
 
 			rtt_plot = TcpRTTPlot(data_plot)
-			#rtt_plot.show_rtts_plot("RTT Exp.", "Red")
+			#print rtt_plot.get_median_rtt_ms()
 
-			print "%s,%d,%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d" %(
+			if rtt_plot.get_rtts_number() > 1:
+				rtt_plot.show_rtts_plot("RTT Exp.", "Red")
+
+
+
+			if flow_index == 0 and segment_index == 0:
+				data_endpoint.bytes_passed_computation_show(True)
+
+			tb_simulator = TokenBucketSim(data_plot)
+			print tb_simulator.token_bucket_simulator()
+			
+			#target_packet = data_endpoint.packets[len(data_endpoint.packets) - 1]
+			#print (target_packet.bytes_passed + target_packet.data_len), (target_packet.seq_end - 1 - data_endpoint.seq_init)
+
+			print "%s,%d,%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d" %(
 				input_filename,
 				flow_index,
 				segment_index,
@@ -101,7 +117,8 @@ for _, flow in flows.items():
 				data_plot.get_losses_number(2),
 				rtt_plot.get_rtts_number(),
 				rtt_plot.get_inflated_rtt_flag(),
-				get_policing_params_from_plot_0(data_plot))
+				get_policing_params_from_plot_0(data_plot),
+				get_policing_params_for_endpoint(data_endpoint, 0))
 		segment_index += 1
 	flow_index += 1
 
@@ -109,7 +126,7 @@ for _, flow in flows.items():
 
 
 
-
+show()
 
 
 
